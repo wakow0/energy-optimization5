@@ -217,9 +217,53 @@ def optimize_energy(start_t, STRATEGY):
         
         model += SOC[t] >= soc_min  # Prevent SOC from going too low
 
+
+
+
+    iteration_costs = []
+
+    for t in range(start_t, end_t):
+        if STRATEGY == "FIXED":
+            iteration_cost = (
+                P_import[t] * (FIXED_IMPORT_PRICE + grid_import_penalty) -
+                P_export[t] * FIXED_EXPORT_PRICE -
+                battery_discharge_bonus * P_bat_dis[t]
+            )
+        elif STRATEGY == "DYNAMIC":
+            iteration_cost = (
+                P_import[t] * (df["total_consumption_rate"].iloc[t] + grid_import_penalty) -
+                P_export[t] * df["grid_sellback_rate"].iloc[t] -
+                battery_discharge_bonus * P_bat_dis[t]
+            )
+        
+        # ✅ Add the iteration cost to the list
+        iteration_costs.append({
+            "time": df["time"].iloc[t],
+            "strategy": STRATEGY,
+            "interval": t,
+            "iteration_cost": iteration_cost
+        })
     
     # Solve the model using CBC
     model.solve(PULP_CBC_CMD(msg=0))
+
+
+    # ✅ After solving, extract actual computed values
+    solved_costs = []
+    for cost in iteration_costs:
+        solved_costs.append({
+            "time": cost["time"],
+            "strategy": cost["strategy"],
+            "interval": cost["interval"],
+            "iteration_cost_value": cost["iteration_cost"].value()
+        })
+
+    # ✅ Save the per-iteration costs to CSV
+    filename = f"{STRATEGY}_iteration_costs.csv"
+    pd.DataFrame(solved_costs).to_csv(filename, index=False)
+    print(f"✅ Saved iteration costs to {filename}")
+
+    
     if (end_t - 1) in SOC:
         prev_final_soc = SOC[end_t - 1].varValue
     else:
@@ -286,8 +330,8 @@ if __name__ == "__main__":
     print("✅ Results saved successfully!")
 
     # ✅ Run Plotting
-    #print("📊 Generating plots...")
-    #subprocess.run(["python", "plot_results.py"])
+    print("📊 Generating plots...")
+    subprocess.run(["python", "plot_results.py"])
 
     total_time = time.time() - start_time
     print(f"⏳ Total Execution Time: {total_time:.2f} seconds")
