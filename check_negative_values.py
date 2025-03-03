@@ -1,7 +1,8 @@
 import pandas as pd
 
 # ✅ Load the latest optimization results
-file_path = "WorkingCodeVersion1_FIXED_v4.csv"
+file_path = "WorkingCodeVersion1_FIXED_v6.csv"
+file_path = "WorkingCodeVersion1_DYNAMIC_v6.csv"
 
 try:
     
@@ -15,7 +16,8 @@ try:
         "p_import (kw)",  # Grid Purchases
         "p_export (kw)",  # Grid Sales
         "p_bat_ch (kw)",  # Battery Charge Power
-        "p_bat_dis (kw)"  # Battery Discharge Power
+        "p_bat_dis (kw)",  # Battery Discharge Power
+        "soc (%)"
     ]
 
     # ✅ Ensure the required columns exist in the dataset

@@ -1,5 +1,6 @@
 import os
 import time
+
 import pandas as pd
 import numpy as np
 import multiprocessing
@@ -11,7 +12,7 @@ import subprocess
 # CONFIGURABLE PARAMETERS
 # =======================
 BATCH_SIZE = 48
-LOOK_AHEAD_WINDOW = 10
+LOOK_AHEAD_WINDOW = 0
 NUM_CORES = multiprocessing.cpu_count()
 SMOOTHING_WINDOW = 10
 
@@ -326,7 +327,7 @@ def optimize_energy2(start_t, STRATEGY):
 
     return results
 
-def optimize_energy(start_t, STRATEGY, prev_final_soc):
+def optimize_energy3(start_t, STRATEGY, prev_final_soc):
     """Runs optimization for a batch of intervals."""
 
     model = LpProblem("Energy_Cost_Minimization", LpMinimize)
@@ -430,6 +431,215 @@ def optimize_energy(start_t, STRATEGY, prev_final_soc):
 
     return results, prev_final_soc
 
+def optimize_energy4(start_t, STRATEGY, prev_final_soc):
+    """Runs optimization for a batch of intervals with full constraints."""
+
+    model = LpProblem("Energy_Cost_Minimization", LpMinimize)
+    end_t = min(start_t + BATCH_SIZE, len(df) - LOOK_AHEAD_WINDOW)
+
+    inverse_eta_dis = 1 / eta_dis
+
+    CHEAP_IMPORT_PRICE = df["total_consumption_rate"].quantile(0.25)
+    EXPENSIVE_IMPORT_PRICE = df["total_consumption_rate"].quantile(0.75)
+
+    grid_import_penalty = 5.0
+    battery_discharge_bonus = 1.0
+
+    P_import, P_export, P_bat_ch, P_bat_dis, SOC = {}, {}, {}, {}, {}
+    Delta_P_import, Delta_P_export, Delta_P_bat_ch, Delta_P_bat_dis = {}, {}, {}, {}
+    X_import, X_export, X_bat_ch, X_bat_dis = {}, {}, {}, {}
+
+    for t in range(start_t, end_t):
+        P_import[t] = LpVariable(f"P_import_{t}", 0, inverter_capacity)
+        P_export[t] = LpVariable(f"P_export_{t}", 0, inverter_capacity)
+        P_bat_ch[t] = LpVariable(f"P_bat_ch_{t}", 0, battery_max_charge)
+        P_bat_dis[t] = LpVariable(f"P_bat_dis_{t}", 0, battery_max_discharge)
+        SOC[t] = LpVariable(f"SOC_{t}", soc_min, soc_max)
+
+        X_import[t] = LpVariable(f"X_import_{t}", cat="Binary")
+        X_export[t] = LpVariable(f"X_export_{t}", cat="Binary")
+        X_bat_ch[t] = LpVariable(f"X_bat_ch_{t}", cat="Binary")
+        X_bat_dis[t] = LpVariable(f"X_bat_dis_{t}", cat="Binary")
+
+        if t > start_t:
+            Delta_P_import[t] = LpVariable(f"Delta_P_import_{t}", lowBound=0)
+            Delta_P_export[t] = LpVariable(f"Delta_P_export_{t}", lowBound=0)
+            Delta_P_bat_ch[t] = LpVariable(f"Delta_P_bat_ch_{t}", lowBound=0)
+            Delta_P_bat_dis[t] = LpVariable(f"Delta_P_bat_dis_{t}", lowBound=0)
+
+    model += lpSum(
+        P_import[t] * (FIXED_IMPORT_PRICE + grid_import_penalty if STRATEGY == "FIXED" else df["total_consumption_rate"].iloc[t] + grid_import_penalty)
+        - P_export[t] * (FIXED_EXPORT_PRICE if STRATEGY == "FIXED" else df["grid_sellback_rate"].iloc[t])
+        - battery_discharge_bonus * P_bat_dis[t]
+        for t in range(start_t, end_t)
+    )
+
+    for t in range(start_t, end_t):
+        available_renewable = df["dc_ground_1500vdc_power_output"].iloc[t] + df["windflow_33_[500kw]_power_output"].iloc[t]
+        demand = df["ac_primary_load"].iloc[t]
+
+        model += P_import[t] >= 0
+        model += P_export[t] >= 0
+        model += P_bat_ch[t] >= 0
+        model += P_bat_dis[t] >= 0
+
+        model += available_renewable + P_bat_dis[t] + P_import[t] == demand + P_bat_ch[t] + P_export[t]
+
+        model += P_import[t] <= demand - available_renewable + P_bat_ch[t]
+
+        if df["total_consumption_rate"].iloc[t] <= CHEAP_IMPORT_PRICE:
+            model += P_bat_ch[t] <= battery_max_charge
+        else:
+            model += P_bat_ch[t] <= battery_max_charge * 0.1
+
+        model += P_export[t] <= inverter_capacity
+        model += P_export[t] <= P_bat_dis[t]
+
+        model += P_bat_dis[t] <= demand
+        model += P_bat_ch[t] + P_bat_dis[t] <= inverter_capacity
+
+        model += X_bat_ch[t] + X_bat_dis[t] <= 1
+        model += P_bat_ch[t] <= X_bat_ch[t] * battery_max_charge
+        model += P_bat_dis[t] <= X_bat_dis[t] * battery_max_discharge
+
+        model += X_import[t] + X_export[t] <= 1
+        model += P_import[t] <= X_import[t] * inverter_capacity
+        model += P_export[t] <= X_export[t] * inverter_capacity
+
+        if t == start_t:
+            model += SOC[t] == prev_final_soc
+        else:
+            model += SOC[t] == SOC[t - 1] + (P_bat_ch[t] * eta_ch) - (P_bat_dis[t] * inverse_eta_dis)
+
+            model += Delta_P_import[t] >= P_import[t] - P_import[t - 1]
+            model += Delta_P_import[t] >= P_import[t - 1] - P_import[t]
+            model += Delta_P_import[t] <= max_change_limit
+
+            model += Delta_P_export[t] >= P_export[t] - P_export[t - 1]
+            model += Delta_P_export[t] >= P_export[t - 1] - P_export[t]
+            model += Delta_P_export[t] <= max_change_limit
+
+            model += Delta_P_bat_ch[t] >= P_bat_ch[t] - P_bat_ch[t - 1]
+            model += Delta_P_bat_ch[t] >= P_bat_ch[t - 1] - P_bat_ch[t]
+            model += Delta_P_bat_ch[t] <= max_battery_rate_change
+
+            model += Delta_P_bat_dis[t] >= P_bat_dis[t] - P_bat_dis[t - 1]
+            model += Delta_P_bat_dis[t] >= P_bat_dis[t - 1] - P_bat_dis[t]
+            model += Delta_P_bat_dis[t] <= max_battery_rate_change
+
+    model.solve(PULP_CBC_CMD(msg=0))
+
+    if (end_t - 1) in SOC and SOC[end_t - 1].varValue is not None:
+        prev_final_soc = SOC[end_t - 1].varValue
+    else:
+        prev_final_soc = soc_min
+
+    results = [{
+        "time": df["time"].iloc[t],
+        "P_import (kW)": max(P_import[t].varValue, 0),
+        "P_export (kW)": max(P_export[t].varValue, 0),
+        "P_bat_ch (kW)": max(P_bat_ch[t].varValue, 0),
+        "P_bat_dis (kW)": max(P_bat_dis[t].varValue, 0),
+        "SOC (%)": max((SOC[t].varValue / battery_capacity) * 100, 0)
+    } for t in range(start_t, end_t)]
+
+    return results, prev_final_soc
+
+battery_capacity = 2000
+battery_max_charge = 1000
+battery_max_discharge = 1000
+inverter_capacity = 1000
+soc_min = 0.05 * battery_capacity
+soc_max = 1.0 * battery_capacity
+eta_ch = 0.95
+eta_dis = 0.95
+
+
+def optimize_energy(start_t, STRATEGY, prev_final_soc):
+    model = LpProblem("Energy_Optimization", LpMinimize)
+    end_t = min(start_t + BATCH_SIZE, time_intervals)
+
+    inverse_eta_dis = 1 / eta_dis
+
+    P_import, P_export, P_bat_ch, P_bat_dis, SOC = {}, {}, {}, {}, {}
+    Delta_P_import, Delta_P_export, Delta_P_bat_ch, Delta_P_bat_dis = {}, {}, {}, {}
+
+    for t in range(start_t, end_t):
+        P_import[t] = LpVariable(f"P_import_{t}", 0, inverter_capacity)
+        P_export[t] = LpVariable(f"P_export_{t}", 0, inverter_capacity)
+        P_bat_ch[t] = LpVariable(f"P_bat_ch_{t}", 0, battery_max_charge)
+        P_bat_dis[t] = LpVariable(f"P_bat_dis_{t}", 0, battery_max_discharge)
+        SOC[t] = LpVariable(f"SOC_{t}", soc_min, soc_max)
+
+        if t > start_t:
+            Delta_P_import[t] = LpVariable(f"Delta_P_import_{t}", 0)
+            Delta_P_export[t] = LpVariable(f"Delta_P_export_{t}", 0)
+            Delta_P_bat_ch[t] = LpVariable(f"Delta_P_bat_ch_{t}", 0)
+            Delta_P_bat_dis[t] = LpVariable(f"Delta_P_bat_dis_{t}", 0)
+
+    model += lpSum(
+        P_import[t] * (FIXED_IMPORT_PRICE if STRATEGY == "FIXED" else df["total_consumption_rate"].iloc[t]) -
+        P_export[t] * (FIXED_EXPORT_PRICE if STRATEGY == "FIXED" else df["grid_sellback_rate"].iloc[t])
+                   for t in range(start_t, end_t))
+
+    for t in range(start_t, end_t):
+        available_renewable = df["dc_ground_1500vdc_power_output"].iloc[t] + df["windflow_33_[500kw]_power_output"].iloc[t]
+        demand = df["ac_primary_load"].iloc[t]
+
+        model += available_renewable + P_bat_dis[t] + P_import[t] == demand + P_bat_ch[t] + P_export[t]
+
+        model += P_import[t] >= 0
+        model += P_export[t] >= 0
+        model += P_bat_ch[t] >= 0
+        model += P_bat_dis[t] >= 0
+
+        model += P_import[t] + P_export[t] <= inverter_capacity
+        model += P_bat_ch[t] + P_bat_dis[t] <= battery_max_charge
+
+        if t == start_t:
+            model += SOC[t] == prev_final_soc
+        else:
+            model += SOC[t] == SOC[t - 1] + (P_bat_ch[t] * eta_ch) - (P_bat_dis[t] * inverse_eta_dis)
+
+            model += Delta_P_import[t] >= P_import[t] - P_import[t - 1]
+            model += Delta_P_import[t] >= P_import[t - 1] - P_import[t]
+            model += Delta_P_export[t] >= P_export[t] - P_export[t - 1]
+            model += Delta_P_export[t] >= P_export[t - 1] - P_export[t]
+            model += Delta_P_bat_ch[t] >= P_bat_ch[t] - P_bat_ch[t - 1]
+            model += Delta_P_bat_ch[t] >= P_bat_ch[t - 1] - P_bat_ch[t]
+            model += Delta_P_bat_dis[t] >= P_bat_dis[t] - P_bat_dis[t - 1]
+            model += Delta_P_bat_dis[t] >= P_bat_dis[t - 1] - P_bat_dis[t]
+
+    model.solve(PULP_CBC_CMD(msg=0))
+
+    prev_final_soc = max(SOC[end_t - 1].varValue, soc_min)
+
+    results = [{
+        "time": df["time"].iloc[t],
+        "P_import (kW)": max(P_import[t].varValue, 0),
+        "P_export (kW)": max(P_export[t].varValue, 0),
+        "P_bat_ch (kW)": max(P_bat_ch[t].varValue, 0),
+        "P_bat_dis (kW)": max(P_bat_dis[t].varValue, 0),
+        "SOC (%)": max((SOC[t].varValue / battery_capacity) * 100, 0)
+    } for t in range(start_t, end_t)]
+
+    return results, prev_final_soc
+
+from tqdm import tqdm
+
+all_results = []
+prev_final_soc = soc_min
+
+for start_t in tqdm(range(0, time_intervals, BATCH_SIZE), desc="Optimization Progress", unit="batch"):
+    batch_results, prev_final_soc = optimize_energy(start_t, "FIXED", prev_final_soc)
+    all_results.extend(batch_results)
+
+print("✅ COMPLETED!")
+
+
+
+
+
 
 # =======================
 # RUN OPTIMIZATION
@@ -479,12 +689,13 @@ if __name__ == "__main__":
     results_fixed_df["time"] = results_fixed_df["time"].astype(str)
     results_dynamic_df["time"] = results_dynamic_df["time"].astype(str)
     homer_df["time"] = homer_df["time"].astype(str)
-
+    
+    print("✅ Start to Save Results...!")
     
     # =======================
     # SAVE RESULTS (Versioning)
     # =======================
-    version = "v3"  # Update version as needed
+    version = "v4"  # Update version as needed
     results_fixed_df.to_csv(f"WorkingCodeVersion1_FIXED_{version}.csv", index=False)
     results_dynamic_df.to_csv(f"WorkingCodeVersion1_DYNAMIC_{version}.csv", index=False)
     homer_df.to_csv(f"WorkingCodeVersion1_HOMER_{version}.csv", index=False)
