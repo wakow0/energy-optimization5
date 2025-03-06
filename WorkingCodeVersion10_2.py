@@ -84,7 +84,9 @@ eta_dis = 0.95
 
 max_change_limit = 500
 max_battery_rate_change = 300
-max_renewable_capacity=
+PV_capacity = 1500  # kWp
+Wind_capacity = 500  # kW
+max_renewable_capacity = PV_capacity + Wind_capacity  # 2000 kW
 
 # =======================
 # OPTIMIZATION FUNCTION
