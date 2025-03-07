@@ -23,8 +23,8 @@ def load_csv(file_path):
         return None
 
 # Load all three datasets
-fixed_df = load_csv("WorkingCodeVersion1_FIXED_v10_5.csv")
-dynamic_df = load_csv("WorkingCodeVersion1_DYNAMIC_v10_5.csv")
+fixed_df = load_csv("WorkingCodeVersion1_FIXED_v10_8.csv")
+dynamic_df = load_csv("WorkingCodeVersion1_DYNAMIC_v10_8.csv")
 homer_df = load_csv("WorkingCodeVersion1_HOMER_v10_5.csv")
 
 # Ensure all three datasets have the same number of rows before merging

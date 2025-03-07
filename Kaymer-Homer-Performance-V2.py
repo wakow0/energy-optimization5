@@ -5,9 +5,9 @@ FIXED_IMPORT_PRICE = 0.1939  # £/kWh
 FIXED_EXPORT_PRICE = 0.0769  # £/kWh
 
 # ✅ Load the CSV files
-opt_results_fixed = pd.read_csv("WorkingCodeVersion1_FIXED_v10_7.csv")
-opt_results_dynamic = pd.read_csv("WorkingCodeVersion1_DYNAMIC_v10_7.csv")
-opt_results_homer = pd.read_csv("WorkingCodeVersion1_HOMER_v10_7.csv")
+opt_results_fixed = pd.read_csv("WorkingCodeVersion1_FIXED_v10_8.csv")
+opt_results_dynamic = pd.read_csv("WorkingCodeVersion1_DYNAMIC_v10_8.csv")
+opt_results_homer = pd.read_csv("WorkingCodeVersion1_HOMER_v10_5.csv")
 processed_data = pd.read_csv("processed_data.csv")
 
 #df = pd.read_csv("research.csv", skiprows=3)
