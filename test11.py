@@ -24,10 +24,14 @@ STRATEGY = "FIXED"
 
 # Load Dataset
 file_path = "research.csv"
-df = pd.read_csv(file_path, skiprows=3, dtype=str, low_memory=False)
+file_path = "processed_data.csv"
+file_path = "heuristic_optimization_results_v1.csv"
+
+
+df = pd.read_csv(file_path, skiprows=0, dtype=str, low_memory=False)
 #df = pd.read_csv(file_path, skiprows=3)
 df.head()
-#print(df.columns.tolist())
+print(df.columns.tolist())
 #print(df.head(10))
 
 DATA_PERCENTAGE = 1  # Change to 0.1 for 10%, 0.5 for 50%, etc.
@@ -35,9 +39,10 @@ DATA_PERCENTAGE = 1  # Change to 0.1 for 10%, 0.5 for 50%, etc.
 # Calculate number of rows to use
 total_rows = len(df)
 print(f"☀️  Total rows: {total_rows:.2f}")
+print(f"☀️  Total Columns: {total_rows:.2f}")
 sampled_rows = int(total_rows * DATA_PERCENTAGE)
 print(f"☀️  sampled rows: {sampled_rows:.2f}")
 # Option 1: Select first X% of the dataset (sequential)
 df_sampled = df.iloc[:5]  # Uses first X% of the year
-print(f"☀️  df sampled: {len(df_sampled):.2f}")
-print(df_sampled.iloc[:2-5])
+#print(f"☀️  df sampled: {len(df_sampled):.2f}")
+#print(df_sampled.iloc[:2-5])
