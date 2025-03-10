@@ -246,9 +246,25 @@ if __name__ == "__main__":
     results_dynamic_df = results_dynamic_df[result_columns]
     homer_df = homer_df[result_columns]
 
-    results_fixed_df["time"] = results_fixed_df["time"].astype(str)
-    results_dynamic_df["time"] = results_dynamic_df["time"].astype(str)
-    homer_df["time"] = homer_df["time"].astype(str)
+    
+    # # Ensure 'time' is an integer before converting
+    results_fixed_df["time"] = pd.to_numeric(results_fixed_df["time"], errors="coerce")
+
+    # Convert from nanoseconds to datetime
+    results_fixed_df["time"] = pd.to_datetime(results_fixed_df["time"], unit="ns", errors="coerce")
+
+    # Repeat for results_dynamic_df
+    results_dynamic_df["time"] = pd.to_numeric(results_dynamic_df["time"], errors="coerce")
+    results_dynamic_df["time"] = pd.to_datetime(results_dynamic_df["time"], unit="ns", errors="coerce")
+
+    # Print again to check if conversion worked
+    print(results_fixed_df["time"].head())
+    print(results_dynamic_df["time"].head())
+
+
+    #print(homer_df["time"].head())  # Check sample values
+    homer_df["time"] = pd.to_datetime(homer_df["time"], unit="ns", errors='coerce')
+    homer_df["time"] = homer_df["time"].dt.strftime("%Y-%m-%d %H:%M:%S")
 
     print("✅ Start to Save Results...!")
 
