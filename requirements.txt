@@ -1,0 +1,17 @@
+numpy
+pandas
+matplotlib
+scipy
+scikit-learn
+tqdm
+pulp
+flake8
+pytest
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
+google-api-python-client
+jupyter 
+gurobipy 
+cvxpy
+
