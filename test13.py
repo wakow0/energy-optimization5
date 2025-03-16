@@ -215,14 +215,32 @@ def run_rl_optimization(pbar):
         results.append(0)  # Default action if RL stops early
     df["RL_Action"] = results
 
-    import pandas as pd
+    # Ensure required output columns exist before saving
+    # required_output_columns = [
+    #     "time", "p_import_(kw)", "p_export_(kw)", "p_bat_ch_(kw)", "p_bat_dis_(kw)", "soc_(%)"
+    # ]
 
-    # Ensure the time column is formatted correctly
-    df["time"] = pd.to_datetime(df["time"], errors="coerce")  # Convert time column
+   
+  
 
-    # Define required output columns (ensuring correct expected names)
+  
+
+        # Print available columns for debugging
+    print("Available columns in original_df:", original_df.columns.tolist())
+
+    # Standardize column names
+    original_df.columns = original_df.columns.str.strip().str.lower().str.replace(" ", "_")
+
+    # Ensure "time" column exists
+    if "time" not in original_df.columns:
+        raise KeyError("❌ Column 'time' is missing in original_df!")
+
+    # Extract only the time column
+    output_Time_columns1 = original_df[["time"]]
+
+    # Define column name mappings (ensure correct mappings based on actual dataset)
+     # Define expected column mappings
     output_columns1 = {
-        "time": "time",  # Time remains the same
         "P_import (kW)": "p_import_(kw)",
         "P_export (kW)": "p_export_(kw)",
         "P_bat_ch (kW)": "p_bat_ch_(kw)",
@@ -230,24 +248,33 @@ def run_rl_optimization(pbar):
         "SOC (%)": "soc_(%)",
     }
 
-    # Ensure all required columns exist in `df`
-    for col in output_columns1.values():
-        if col not in df.columns:
-            df[col] = 0  # Default value if missing
+  
 
-    # Extract required columns and rename them properly
-    output_columns = df[list(output_columns1.values())].copy()
+    # Merge time column with required columns
+    output_columns = pd.concat([output_Time_columns1, df[output_columns_list]], axis=1)
+
+    # Rename columns based on the defined mapping
     output_columns.rename(columns={v: k for k, v in output_columns1.items()}, inplace=True)
 
-    # Ensure time is properly formatted for CSV output
-    output_columns["time"] = output_columns["time"].dt.strftime("%Y-%m-%d %H:%M:%S")
+    # Verify the output
+    print(output_columns.head())
 
-    # Save results with exact formatting
-    output_columns.to_csv(OUTPUT_FILE, index=False)
 
-    print(f"✅ Results saved successfully to {OUTPUT_FILE}")
 
-    output_columns.to_csv(OUTPUT_FILE, index=False)
+
+ 
+
+    for col in output_columns:
+        if col not in df.columns:
+            df[col] = 0  # Default value
+
+    
+    #df["time"] = df["time"].astype(str)
+    #df["time"] = pd.to_datetime(df["time"], infer_datetime_format=True, errors="coerce")
+    #df["tme"] = pd.to_datetime(df["time"], format="%Y-%m-%d %H:%M:%S", errors="coerce")
+
+
+    df[output_columns].to_csv(OUTPUT_FILE, index=False)
 
     print(f"✅ RL optimization completed. Results saved to {OUTPUT_FILE}")
 
@@ -259,7 +286,7 @@ def run_rl_optimization(pbar):
 if __name__ == "__main__":
     with tqdm(total=18000 + len(df), desc="Overall Progress", unit="step") as pbar:
         # Train the RL model
-        train_rl(pbar)
+        #train_rl(pbar)
 
         # Run RL optimization
         run_rl_optimization(pbar)

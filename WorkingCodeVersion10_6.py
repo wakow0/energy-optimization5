@@ -24,14 +24,16 @@ eta_ch = 0.95
 eta_dis = 0.95
 
 max_change_limit = 300
-max_battery_rate_change = 200
+max_battery_rate_change = 500
 PV_capacity = 1500
 Wind_capacity = 500
 max_renewable_capacity = PV_capacity + Wind_capacity
 
 min_discharge_value = 5
 penalty_cost = 50
-SOC_BUFFER = 0.98 * soc_max
+#SOC_BUFFER = 0.98 * soc_max
+SOC_BUFFER = 0.96 * soc_max  # Allow SOC to drop below 98%
+
 OVERLAP = int(BATCH_SIZE * 0.5)
 
 from data_parser import load_csv_data
@@ -85,46 +87,106 @@ def optimize_energy(start_t, STRATEGY, prev_final_soc, prev_batch_powers):
         penalty_cost * P_curtail[t] for t in range(start_t, end_t)
     ), GRB.MINIMIZE)
 
+
+    time_step = 0.5  # 30 minutes (half an hour)
     for t in range(start_t, end_t):
         available_renewable = df["dc_ground_1500vdc_power_output"].iloc[t] + df["windflow_33_[500kw]_power_output"].iloc[t]
         demand = df["ac_primary_load"].iloc[t]
         model.addConstr(available_renewable + P_import[t] + P_bat_dis[t] == demand + P_bat_ch[t] + P_export[t] + P_curtail[t])
         model.addConstr(P_import[t] <= X_import[t] * inverter_capacity)
         model.addConstr(P_export[t] <= X_export[t] * inverter_capacity)
-        model.addConstr(X_import[t] + X_export[t] <= 1)
+        model.addConstr(X_import[t] + X_export[t] <= 1.1)
         model.addConstr(P_bat_ch[t] <= X_bat_ch[t] * battery_max_charge)
         model.addConstr(P_bat_dis[t] <= X_bat_dis[t] * battery_max_discharge)
         model.addConstr(X_bat_ch[t] + X_bat_dis[t] <= 1)
         model.addConstr(P_import[t] <= inverter_capacity * (1 - X_curtail[t]))
         model.addConstr(P_curtail[t] <= max_renewable_capacity * X_curtail[t])
-        model.addConstr(SOC[t] - SOC_BUFFER >= -soc_max * (1 - X_high_soc[t]))
-        model.addConstr(SOC[t] - SOC_BUFFER <= soc_max * X_high_soc[t])
-        model.addConstr(P_bat_dis[t] >= min_discharge_value * X_high_soc[t])
+        
+        #time_step = 0.5  # 30-minute intervals
+        #for t in range(start_t, end_t):
+        if t == start_t:
+            model.addConstr(SOC[t] == prev_final_soc)  # Maintain batch continuity
+        else:
+            model.addConstr(
+                SOC[t] == SOC[t - 1] + (P_bat_ch[t] * eta_ch * time_step) - (P_bat_dis[t] * time_step / eta_dis)
+            )
+
+        
+    model.Params.NumericFocus = 3  # Stronger numerical stability
+    model.Params.IntFeasTol = 1e-6  # Improve integer feasibility
+    model.Params.DualReductions = 0  # Prevent solver from assuming infeasibility
+    model.Params.Presolve = 2  # Use aggressive presolve to simplify constraints
+    model.Params.ScaleFlag = 2  # Improves numerical scaling
+
+    model.Params.InfUnbdInfo = 1  # Detects which constraints are causing issues
+    model.Params.FeasRelaxBigM = 1e3  # Adds flexibility to infeasible constraints
+    model.Params.FeasibilityTol = 1e-6  # Allow minor violations
+    model.Params.IntFeasTol = 1e-6  # Tolerate small integer feasibility errors
+
+    model.Params.IterationLimit = 1e7  # Allow 10 million iterations per batch
+    model.Params.BarIterLimit = 10000  # Increase barrier iterations
+    model.Params.TimeLimit = 120  # Allow up to 2 minutes per batch
+
+    model.Params.NumericFocus = 3  # Strongest numerical stability
+    model.Params.ScaleFlag = 2  # Improve model scaling
+    model.Params.FeasibilityTol = 1e-6  # Allow minor constraint relaxations
+    model.Params.IntFeasTol = 1e-6  # Reduce strict integer feasibility requirements
+    model.Params.DualReductions = 0  # Prevent solver from assuming infeasibility
+    
 
     model.optimize()
 
-    batch_results = [{
-        "time": str(df["time"].iloc[start_t + (t - start_t)]),
-        "P_import (kW)": P_import[t].X,
-        "P_export (kW)": P_export[t].X,
-        "P_bat_ch (kW)": P_bat_ch[t].X,
-        "P_bat_dis (kW)": P_bat_dis[t].X,
-        "P_curtail (kW)": P_curtail[t].X,
-        "SOC (%)": (SOC[t].X / battery_capacity) * 100
-    } for t in range(start_t, end_t)]
+    if model.status == GRB.OPTIMAL:
+        batch_results = [{
+            "time": str(df["time"].iloc[t]),
+            "P_import (kW)": P_import[t].X,
+            "P_export (kW)": P_export[t].X,
+            "P_bat_ch (kW)": P_bat_ch[t].X,
+            "P_bat_dis (kW)": P_bat_dis[t].X,
+            "P_curtail (kW)": P_curtail[t].X,
+            "SOC (%)": (SOC[t].X / battery_capacity) * 100
+        } for t in range(start_t, end_t)]
+    else:
+        print(f"⚠️ Skipping batch {start_t} due to solver failure (Status: {model.status})")
+        return None, prev_final_soc, prev_batch_powers, False  # Prevents accessing `.X`
 
-    return batch_results, prev_final_soc, prev_batch_powers, True
 
-
+        return batch_results, prev_final_soc, prev_batch_powers, True
 
     
-    model.optimize()
+    
     if model.status != GRB.OPTIMAL:
-            print(f"❌ Batch failed at start interval {start_t}")
-            return None, prev_final_soc, prev_batch_powers, False
+        print(f"⚠️ Batch {start_t} failed. Solver Status: {model.status}")
+        print(f"📊 SOC: {prev_final_soc}, Import: {prev_batch_powers['P_import']}, Export: {prev_batch_powers['P_export']}, Battery Charge: {prev_batch_powers['P_bat_ch']}, Battery Discharge: {prev_batch_powers['P_bat_dis']}")
+
+
+        if model.status == GRB.INFEASIBLE:
+            print("🚨 The model is INFEASIBLE. Checking constraint conflicts...")
+            model.computeIIS()
+            model.write(f"infeasible_batch_{start_t}.ilp")
+
+        elif model.status == GRB.UNBOUNDED:
+            print("❌ The model is UNBOUNDED. Writing LP model...")
+            model.write(f"unbounded_batch_{start_t}.lp")
+
+        elif model.status == GRB.INF_OR_UNBD:
+            print("⚠️ The model is INFEASIBLE or UNBOUNDED. Investigate constraints.")
+            model.write(f"inf_or_unbd_batch_{start_t}.lp")
+
+        elif model.status == GRB.ITERATION_LIMIT:
+            print("⚠️ The solver stopped due to reaching the iteration limit!")
+
+        elif model.status == GRB.NUMERIC:
+            print("⚠️ The solver encountered numerical issues!")
+
+        elif model.status == GRB.TIME_LIMIT:
+            print("⚠️ The solver stopped due to time limit!")
+
+        return None, prev_final_soc, prev_batch_powers, False
+
 
     prev_final_soc = min(max(SOC[end_t - 1].X, soc_min), SOC_BUFFER)
-        
+
     batch_results = [{
             "time": str(df["time"].iloc[t]),
             "P_import (kW)": max(P_import[t].X, 0),
