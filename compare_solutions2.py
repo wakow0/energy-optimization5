@@ -3,8 +3,8 @@ import matplotlib.pyplot as plt
 
 # ✅ Load datasets
 solution_a = pd.read_csv("WorkingCodeVersion1_DYNAMIC_v10_6.csv")
-solution_FIXED = pd.read_csv("generated_decision_variables_FIXED_v3.csv")
-solution_DYNAMIC = pd.read_csv("generated_decision_variables_DYNAMIC_v3.csv")
+solution_FIXED = pd.read_csv("generated_decision_variables_FIXED_v5.csv")
+solution_DYNAMIC = pd.read_csv("generated_decision_variables_DYNAMIC_v5.csv")
 solution_HOMER = pd.read_csv("WorkingCodeVersion1_HOMER_v10_6.csv")
 
 # ✅ Convert 'time' to datetime

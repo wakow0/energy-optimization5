@@ -1,0 +1,136 @@
+import pandas as pd
+import numpy as np
+import time  
+from tqdm import tqdm  
+
+# Implementing v15: Further Refinements to Ensure Dynamic Pricing Outperforms Fixed Pricing
+# Implementing v15: Refining v5 by Removing Spikes While Keeping Dynamic Better and Saving Both Fixed & Dynamic
+
+# Load the extracted input data
+file_path = "extracted_inputs.csv"
+df = pd.read_csv(file_path)
+
+# Battery & Grid Constraints
+battery_capacity = 2000  # kWh
+battery_max_charge = 1000  # kW
+battery_max_discharge = 1000  # kW
+inverter_capacity = 1000  # kW
+soc_min = 5  # 5% SoC limit
+soc_max = 100  # 100% SoC
+eta_ch = 0.95  # Charging efficiency
+eta_dis = 0.95  # Discharging efficiency
+
+# Define Fixed Pricing Constants
+FIXED_IMPORT_PRICE = 0.1939  # £/kWh
+FIXED_EXPORT_PRICE = 0.0769  # £/kWh
+
+# Determine price thresholds for dynamic pricing adjustments
+Q1_import = df["total_consumption_rate"].quantile(0.25)  
+Q3_import = df["total_consumption_rate"].quantile(0.75)  
+Q1_export = df["grid_sellback_rate"].quantile(0.25)  
+Q3_export = df["grid_sellback_rate"].quantile(0.75)  
+
+# Set Look-Ahead Window
+LOOK_AHEAD_WINDOW = 10
+
+# Initialize separate DataFrames for Fixed & Dynamic pricing
+df_fixed = df.copy()
+df_dynamic = df.copy()
+
+# Initialize new decision variable columns for both strategies
+for df_version in [df_fixed, df_dynamic]:
+    df_version["P_import (kW)"] = 0.0
+    df_version["P_export (kW)"] = 0.0
+    df_version["P_bat_ch (kW)"] = 0.0
+    df_version["P_bat_dis (kW)"] = 0.0
+    df_version["SOC (%)"] = np.nan  # Initialize SoC in percentage
+
+# Set initial SoC using the previous day's last value
+df_fixed.loc[0, "SOC (%)"] = 50.0
+df_dynamic.loc[0, "SOC (%)"] = 50.0
+
+# Time Step: 30 minutes (0.5 hours)
+time_step = 0.5
+
+# Start time measurement
+start_time = time.time()
+
+# Process each time step with a progress bar while enforcing smoother transitions
+max_power_change = 50  # Limit power jumps per step
+
+for t in tqdm(range(1, len(df) - LOOK_AHEAD_WINDOW), desc="Processing Fixed & Dynamic Solutions (v15)", unit="step"):
+    for strategy, df_version in [("Fixed", df_fixed), ("Dynamic", df_dynamic)]:
+        available_renewable = df_version.loc[t, "dc_ground_1500vdc_power_output"] + df_version.loc[t, "windflow_33_[500kw]_power_output"]
+        demand = df_version.loc[t, "ac_primary_load"]
+
+        # Determine Pricing for Fixed and Dynamic Strategy
+        if strategy == "Fixed":
+            import_price = FIXED_IMPORT_PRICE
+            export_price = FIXED_EXPORT_PRICE
+        else:  # Dynamic Pricing with look-ahead adjustments
+            import_price = df_version.loc[t, "total_consumption_rate"]
+            export_price = df_version.loc[t, "grid_sellback_rate"]
+
+        # Apply look-ahead strategy (future demand & pricing awareness)
+        future_import_prices = df_version.loc[t:t+LOOK_AHEAD_WINDOW, "total_consumption_rate"].mean()
+        future_export_prices = df_version.loc[t:t+LOOK_AHEAD_WINDOW, "grid_sellback_rate"].mean()
+        future_demand = df_version.loc[t:t+LOOK_AHEAD_WINDOW, "ac_primary_load"].mean()
+
+        reduce_import = import_price >= Q3_import or future_import_prices >= Q3_import
+        prioritize_export = export_price >= Q3_export or future_export_prices >= Q3_export
+        encourage_charge = import_price <= Q1_import and future_import_prices <= Q1_import
+
+        # Optimized Charging & Discharging Strategy
+        charge_power = min(available_renewable, battery_max_charge) if encourage_charge else 0
+        discharge_power = min(battery_max_discharge, demand - available_renewable) if demand > available_renewable else 0
+
+        # Ensure better battery export timing to maximize revenue
+        if prioritize_export and df_version.loc[t-1, "SOC (%)"] > 20:
+            discharge_power = min(battery_max_discharge, df_version.loc[t-1, "SOC (%)"] / 100 * battery_capacity)
+            grid_export = discharge_power  # Ensure discharged energy is exported when profitable
+        else:
+            grid_export = max(0, available_renewable - demand - charge_power)
+
+        # Grid Import only if necessary and price isn't too high
+        grid_import = max(0, demand - available_renewable - discharge_power) if not reduce_import else 0
+
+        # Apply mutual exclusivity rules
+        if grid_import > 0:
+            grid_export = 0
+        if charge_power > 0:
+            discharge_power = 0
+
+        # Implement Energy Balance & Smoother Transitions
+        if t > 1:
+            grid_import = np.clip(grid_import, df_version.loc[t-1, "P_import (kW)"] - max_power_change,
+                                  df_version.loc[t-1, "P_import (kW)"] + max_power_change)
+            grid_export = np.clip(grid_export, df_version.loc[t-1, "P_export (kW)"] - max_power_change,
+                                  df_version.loc[t-1, "P_export (kW)"] + max_power_change)
+            charge_power = np.clip(charge_power, df_version.loc[t-1, "P_bat_ch (kW)"] - max_power_change,
+                                   df_version.loc[t-1, "P_bat_ch (kW)"] + max_power_change)
+            discharge_power = np.clip(discharge_power, df_version.loc[t-1, "P_bat_dis (kW)"] - max_power_change,
+                                      df_version.loc[t-1, "P_bat_dis (kW)"] + max_power_change)
+
+        # Update SoC in percentage format
+        prev_soc = df_version.loc[t-1, "SOC (%)"]
+        soc_change = ((charge_power * eta_ch * time_step) - (discharge_power * time_step / eta_dis)) / battery_capacity * 100
+        new_soc = prev_soc + soc_change
+        new_soc = np.clip(new_soc, soc_min, soc_max)  # Ensure within 5% - 100%
+
+        # Store computed values
+        df_version.loc[t, "P_import (kW)"] = grid_import
+        df_version.loc[t, "P_export (kW)"] = grid_export
+        df_version.loc[t, "P_bat_ch (kW)"] = charge_power
+        df_version.loc[t, "P_bat_dis (kW)"] = discharge_power
+        df_version.loc[t, "SOC (%)"] = new_soc  # Store SoC as percentage
+
+# End time measurement
+end_time = time.time()
+execution_time = end_time - start_time
+
+# Save the generated decision variable data
+df_fixed.to_csv("solution_output_FIXED_v15.csv", index=False)
+df_dynamic.to_csv("solution_output_DYNAMIC_v15.csv", index=False)
+
+print("✅ v15 Implemented: Fixed & Dynamic Pricing solutions saved.")
+print(f"⏳ Total Execution Time: {execution_time:.2f} seconds")
