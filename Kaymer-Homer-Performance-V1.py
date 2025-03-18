@@ -22,8 +22,8 @@ def load_csv(file_path):
         return None
 
 # Load all three datasets
-fixed_df = load_csv("solution_output_FIXED_v8.csv")
-dynamic_df = load_csv("solution_output_DYNAMIC_v8.csv")
+fixed_df = load_csv("solution_output_FIXED_v20.csv")
+dynamic_df = load_csv("solution_output_DYNAMIC_v20.csv")
 homer_df = load_csv("WorkingCodeVersion1_HOMER_v10_6.csv")
 
 # Ensure all dataframes are valid
@@ -39,7 +39,7 @@ fixed_df = fixed_df.iloc[:min_rows]
 dynamic_df = dynamic_df.iloc[:min_rows]
 homer_df = homer_df.iloc[:min_rows]
 
-print(f"✅ Trimmed all datasets to {min_rows} rows for alignment.")
+#print(f"✅ Trimmed all datasets to {min_rows} rows for alignment.")
 
 # Ensure consistent column formatting for HOMER dataset
 homer_df.columns = homer_df.columns.str.strip().str.lower().str.replace(" ", "_").str.replace(":", "")
@@ -58,14 +58,7 @@ comparison_df = fixed_df.merge(dynamic_df, on="time", suffixes=("_fixed", "_dyna
 comparison_df = comparison_df.merge(homer_df, on="time", how="left")  # Ensure HOMER data is correctly merged
 
 # Print available columns to verify correctness
-print("\n📋 Available columns in comparison_df:", list(comparison_df.columns))
-
-
-
-
-
-
-
+#print("\n📋 Available columns in comparison_df:", list(comparison_df.columns))
 
 
 

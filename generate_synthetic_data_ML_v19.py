@@ -1,0 +1,146 @@
+import pandas as pd
+import numpy as np
+import time  
+from tqdm import tqdm  
+
+# Load the extracted input data
+file_path = "extracted_inputs.csv"
+df = pd.read_csv(file_path)
+
+# Battery & Grid Constraints
+battery_capacity = 2000  # kWh
+battery_max_charge = 1000  # kW
+battery_max_discharge = 1000  # kW
+inverter_capacity = 1000  # kW
+soc_min = 5  # 5% SoC limit
+soc_max = 100  # 100% SoC
+eta_ch = 0.95  # Charging efficiency
+eta_dis = 0.95  # Discharging efficiency
+
+# Define Fixed Pricing Constants
+FIXED_IMPORT_PRICE = 0.1939  # £/kWh
+FIXED_EXPORT_PRICE = 0.0769  # £/kWh
+
+# Determine price thresholds for dynamic pricing adjustments
+Q1_import = df["total_consumption_rate"].quantile(0.25)  
+Q3_import = df["total_consumption_rate"].quantile(0.75)  
+Q1_export = df["grid_sellback_rate"].quantile(0.25)  
+Q3_export = df["grid_sellback_rate"].quantile(0.75)  
+
+# Set Look-Ahead Window (User can select 5, 10, etc.)
+LOOK_AHEAD_WINDOW = 10
+
+# Initialize separate DataFrames for Fixed & Dynamic pricing
+df_fixed = df.copy()
+df_dynamic = df.copy()
+
+# Initialize new decision variable columns for both strategies
+for df_version in [df_fixed, df_dynamic]:
+    df_version["P_import (kW)"] = 0.0
+    df_version["P_export (kW)"] = 0.0
+    df_version["P_bat_ch (kW)"] = 0.0
+    df_version["P_bat_dis (kW)"] = 0.0
+    df_version["SOC (%)"] = np.nan  # Initialize SoC in percentage
+
+# Set initial SoC using the previous day's last value
+df_fixed.loc[0, "SOC (%)"] = 50.0
+df_dynamic.loc[0, "SOC (%)"] = 50.0
+
+# Time Step: 30 minutes (0.5 hours)
+time_step = 0.5
+
+# Start time measurement
+start_time = time.time()
+
+# Process each time step with a progress bar
+for t in tqdm(range(1, len(df) - LOOK_AHEAD_WINDOW), desc="Processing Fixed & Dynamic Solutions (v19)", unit="step"):
+    for strategy, df_version in [("Fixed", df_fixed), ("Dynamic", df_dynamic)]:
+        available_renewable = df_version.loc[t, "dc_ground_1500vdc_power_output"] + df_version.loc[t, "windflow_33_[500kw]_power_output"]
+        demand = df_version.loc[t, "ac_primary_load"]
+        
+        # Determine Pricing (Fixed vs Dynamic)
+        if strategy == "Fixed":
+            import_price = FIXED_IMPORT_PRICE
+            export_price = FIXED_EXPORT_PRICE
+        else:  # Dynamic Pricing
+            import_price = df_version.loc[t, "total_consumption_rate"]
+            export_price = df_version.loc[t, "grid_sellback_rate"]
+
+        # Apply look-ahead strategy (future demand & pricing awareness)
+        future_import_prices = df_version.loc[t:t+LOOK_AHEAD_WINDOW, "total_consumption_rate"].mean()
+        future_export_prices = df_version.loc[t:t+LOOK_AHEAD_WINDOW, "grid_sellback_rate"].mean()
+        future_demand = df_version.loc[t:t+LOOK_AHEAD_WINDOW, "ac_primary_load"].mean()
+
+        reduce_import = import_price >= Q3_import or future_import_prices >= Q3_import
+        prioritize_export = export_price >= Q3_export or future_export_prices >= Q3_export
+        encourage_charge = import_price <= Q1_import and future_import_prices <= Q1_import
+
+        # Ensure demand is met, but allow balance to adjust gradually
+        total_supply = available_renewable
+        grid_import = max(0, demand - total_supply) if not reduce_import else 0
+        total_supply += grid_import
+
+        # Battery Discharge - Adjust dynamically
+        available_battery_energy = df_version.loc[t-1, "SOC (%)"] / 100 * battery_capacity
+        discharge_power = min(battery_max_discharge, available_battery_energy, max(0, demand - total_supply))
+        total_supply += discharge_power
+
+        # Battery Charging - Adjust dynamically
+        charge_power = min(battery_max_charge, max(0, total_supply - demand)) if encourage_charge else 0
+        total_supply -= charge_power  # Reduce supply after charging
+
+        # Grid Export - Adjust dynamically based on market
+        grid_export = max(0, total_supply - demand) if prioritize_export else 0
+
+        # Smooth out import/export transitions
+        if grid_import > 0:
+            grid_export = 0  # No simultaneous import/export
+        if charge_power > 0 and discharge_power > 0:
+            discharge_power = 0  # Prioritize charging unless selling is profitable
+
+        # Update SoC in percentage format
+        prev_soc = df_version.loc[t-1, "SOC (%)"]
+        soc_change = ((charge_power * eta_ch * time_step) - (discharge_power * time_step / eta_dis)) / battery_capacity * 100
+        new_soc = np.round(prev_soc + soc_change, 2)
+        new_soc = np.clip(new_soc, soc_min, soc_max)
+
+        # Store computed values
+        df_version.loc[t, "P_import (kW)"] = grid_import
+        df_version.loc[t, "P_export (kW)"] = grid_export
+        df_version.loc[t, "P_bat_ch (kW)"] = charge_power
+        df_version.loc[t, "P_bat_dis (kW)"] = discharge_power
+        df_version.loc[t, "SOC (%)"] = new_soc
+        df_version.loc[t, "ac_primary_load"] = demand
+
+# End time measurement
+end_time = time.time()
+execution_time = end_time - start_time
+
+# Save results
+df_fixed.to_csv("solution_output_FIXED_v19.csv", index=False)
+df_dynamic.to_csv("solution_output_DYNAMIC_v19.csv", index=False)
+
+print("✅ Solutions saved with improved balance and performance.")
+print(f"⏳ Execution Time: {execution_time:.2f} seconds")
+
+# Validation Function
+def validate_solution(file_name):
+    df_check = pd.read_csv(file_name)
+    violations = []
+
+    for t in range(1, len(df_check)):
+        total_supply = df_check.loc[t, "P_import (kW)"] + df_check.loc[t, "P_bat_dis (kW)"]
+        total_demand = df_check.loc[t, "P_export (kW)"] + df_check.loc[t, "P_bat_ch (kW)"] + df_check.loc[t, "ac_primary_load"]
+
+        if not np.isclose(total_supply, total_demand, atol=0.01):
+            violations.append(f"Energy balance violation at time step {t} in {file_name}")
+
+    if violations:
+        print("\n❌ Violations Found:")
+        for v in violations[:10]:
+            print(v)
+    else:
+        print(f"✅ No violations found in {file_name}")
+
+validate_solution("solution_output_FIXED_v19.csv")
+validate_solution("solution_output_DYNAMIC_v19.csv")
