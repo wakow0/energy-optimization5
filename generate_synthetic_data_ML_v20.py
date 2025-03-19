@@ -54,8 +54,8 @@ for strategy, df_version in [("FIXED", df_fixed), ("DYNAMIC", df_dynamic)]:
             charge_power = 0
 
         # Discharging decision
-        if (import_price >= Q3_import or import_price >= Q3_export) and df_version.loc[t-1, "SOC (%)"] > soc_min:
-            discharge_power = min(battery_max_discharge, demand, (df_version.loc[t-1, "SOC (%)"] - soc_min)/100 * battery_capacity)
+        if (import_price >= Q3_import or export_price >= Q3_export) and df_version.loc[t-1, "SOC (%)"] > soc_min:
+            discharge_power = min(battery_max_discharge, demand, (df_version.loc[t-1, "SOC (%)"] - soc_min) / 100 * battery_capacity)
         else:
             discharge_power = 0
 
@@ -63,12 +63,12 @@ for strategy, df_version in [("FIXED", df_fixed), ("DYNAMIC", df_dynamic)]:
         if charge_power > 0:
             discharge_power = 0
 
-        # Energy balance
+        # Calculate energy balance explicitly
         net_energy = available_renewable + discharge_power - demand - charge_power
 
-        if net_energy := available_renewable + discharge_power - demand - charge_power >= 0:
+        if net_energy >= 0:
             grid_import = 0
-            grid_export = net_energy if import_price >= Q3_export else 0
+            grid_export = net_energy if export_price >= Q3_export else 0
         else:
             grid_import = abs(net_energy)
             grid_export = 0
@@ -81,10 +81,14 @@ for strategy, df_version in [("FIXED", df_fixed), ("DYNAMIC", df_dynamic)]:
         soc_change = ((charge_power * eta_ch - discharge_power / eta_dis) * time_step / battery_capacity) * 100
         new_soc = np.clip(df_version.loc[t-1, "SOC (%)"] + soc_change, soc_min, soc_max)
 
-        # Store results
+        # Store results explicitly with correct numeric assignment
         df_version.loc[t, ["P_import (kW)", "P_export (kW)", "P_bat_ch (kW)", "P_bat_dis (kW)", "SOC (%)"]] = [
-            grid_import, grid_export, charge_power, discharge_power, new_soc
+            float(grid_import), float(grid_export), float(charge_power), float(discharge_power), float(new_soc)
         ]
+
+
+
+
 
 # Save results explicitly
 df_fixed.to_csv("solution_output_FIXED_v20.csv", index=False)
