@@ -1,0 +1,10 @@
+\ Model Energy_Optimization_copy
+\ LP format - for model browsing. Use MPS format to capture full model detail.
+\ Signature: 0xd8241660b71bcde8
+Minimize
+ 
+Subject To
+ R18226: P_export_2278 >= 1035.123
+Bounds
+ -infinity <= P_export_2278 <= 1000
+End

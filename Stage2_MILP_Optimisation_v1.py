@@ -17,8 +17,9 @@ SMOOTHING_WINDOW = 20
 FIXED_IMPORT_PRICE = 0.1939
 FIXED_EXPORT_PRICE = 0.0769
 
-deviation_penalty = 0.001  
-max_adjustment = 100  
+deviation_penalty = 0.001  # Penalize unnecessary deviation from initial values
+max_adjustment = 100  # Allow max 100 kW deviation from initial solution
+max_deviation = 50  # Allow 50 kW flexibility
 
 battery_capacity = 2000
 battery_max_charge = 1000
@@ -46,6 +47,7 @@ try:
     initial_solution.columns = initial_solution.columns.str.strip().str.lower().str.replace(" ", "_")
     initial_solution["time"] = pd.to_datetime(initial_solution["time"], errors="coerce")
     initial_solution.fillna(0, inplace=True)
+    initial_solution["p_export_(kw)"] = initial_solution["p_export_(kw)"].clip(upper=1000)  # Ensure no conflicts
     print("✅ Initial solution loaded successfully!")
 except Exception as e:
     print(f"❌ Failed to load initial solution: {e}")
@@ -59,12 +61,12 @@ try:
     df = pd.read_csv("processed_data.csv")
     df.columns = df.columns.str.strip().str.lower().str.replace(" ", "_")
     df.fillna(0, inplace=True)
-
+    
     required_columns = ["total_consumption_rate", "grid_sellback_rate"]
     missing_columns = [col for col in required_columns if col not in df.columns]
     if missing_columns:
         raise ValueError(f"❌ Missing required columns in processed_data.csv: {missing_columns}")
-
+    
     df["time"] = pd.to_datetime(df["time"], errors="coerce")
     print("✅ Processed data loaded successfully!")
 except Exception as e:
@@ -85,69 +87,45 @@ def optimize_energy_with_warm_start(pricing_strategy):
         model.Params.TimeLimit = 60
 
         P_import, P_export, P_bat_ch, P_bat_dis, SOC = {}, {}, {}, {}, {}
-        deviation_import, deviation_export, deviation_charge, deviation_discharge = {}, {}, {}, {}
-
+        
         for t in range(time_intervals):
             P_import[t] = model.addVar(lb=0, ub=inverter_capacity, name=f"P_import_{t}")
-            P_export[t] = model.addVar(lb=0, ub=inverter_capacity, name=f"P_export_{t}")
+            P_export[t] = model.addVar(lb=0, ub=1000, name=f"P_export_{t}")
             P_bat_ch[t] = model.addVar(lb=0, ub=battery_max_charge, name=f"P_bat_ch_{t}")
             P_bat_dis[t] = model.addVar(lb=0, ub=battery_max_discharge, name=f"P_bat_dis_{t}")
             SOC[t] = model.addVar(lb=soc_min, ub=soc_max, name=f"SOC_{t}")
 
-            deviation_import[t] = model.addVar(lb=0, name=f"dev_import_{t}")
-            deviation_export[t] = model.addVar(lb=0, name=f"dev_export_{t}")
-            deviation_charge[t] = model.addVar(lb=0, name=f"dev_charge_{t}")
-            deviation_discharge[t] = model.addVar(lb=0, name=f"dev_discharge_{t}")
-
+            # ✅ Set warm start values from the initial solution
+            P_import[t].start = initial_solution.loc[t, "p_import_(kw)"]
+            P_export[t].start = initial_solution.loc[t, "p_export_(kw)"]
+            P_bat_ch[t].start = initial_solution.loc[t, "p_bat_ch_(kw)"]
+            P_bat_dis[t].start = initial_solution.loc[t, "p_bat_dis_(kw)"]
+            SOC[t].start = (initial_solution.loc[t, "soc_(%)"] / 100) * battery_capacity
+        
         model.update()
-
-        for t in range(time_intervals):
-            model.addConstr(P_import[t] == initial_solution.loc[t, "p_import_(kw)"], name=f"init_import_{t}")
-            model.addConstr(P_export[t] == initial_solution.loc[t, "p_export_(kw)"], name=f"init_export_{t}")
-            model.addConstr(P_bat_ch[t] == initial_solution.loc[t, "p_bat_ch_(kw)"], name=f"init_charge_{t}")
-            model.addConstr(P_bat_dis[t] == initial_solution.loc[t, "p_bat_dis_(kw)"], name=f"init_discharge_{t}")
-            model.addConstr(SOC[t] == (initial_solution.loc[t, "soc_(%)"] / 100) * battery_capacity, name=f"init_soc_{t}")
-
-            model.addConstr(deviation_import[t] >= P_import[t] - initial_solution.loc[t, "p_import_(kw)"])
-            model.addConstr(deviation_import[t] >= initial_solution.loc[t, "p_import_(kw)"] - P_import[t])
-
-            model.addConstr(deviation_export[t] >= P_export[t] - initial_solution.loc[t, "p_export_(kw)"])
-            model.addConstr(deviation_export[t] >= initial_solution.loc[t, "p_export_(kw)"] - P_export[t])
-
-            model.addConstr(deviation_charge[t] >= P_bat_ch[t] - initial_solution.loc[t, "p_bat_ch_(kw)"])
-            model.addConstr(deviation_charge[t] >= initial_solution.loc[t, "p_bat_ch_(kw)"] - P_bat_ch[t])
-
-            model.addConstr(deviation_discharge[t] >= P_bat_dis[t] - initial_solution.loc[t, "p_bat_dis_(kw)"])
-            model.addConstr(deviation_discharge[t] >= initial_solution.loc[t, "p_bat_dis_(kw)"] - P_bat_dis[t])
 
         model.setObjective(
             quicksum(
-                P_import[t] * (FIXED_IMPORT_PRICE if pricing_strategy == "FIXED" else df["total_consumption_rate"].iloc[t])
-                - P_export[t] * (FIXED_EXPORT_PRICE if pricing_strategy == "FIXED" else df["grid_sellback_rate"].iloc[t])
-                + deviation_penalty * (deviation_import[t] + deviation_export[t] + deviation_charge[t] + deviation_discharge[t])
+                P_import[t] * FIXED_IMPORT_PRICE
+                - P_export[t] * FIXED_EXPORT_PRICE
+                + deviation_penalty * (abs(P_import[t] - initial_solution.loc[t, "p_import_(kw)"])
+                                     + abs(P_export[t] - initial_solution.loc[t, "p_export_(kw)"])
+                                     + abs(P_bat_ch[t] - initial_solution.loc[t, "p_bat_ch_(kw)"])
+                                     + abs(P_bat_dis[t] - initial_solution.loc[t, "p_bat_dis_(kw)"]))
                 for t in range(time_intervals)
             ), GRB.MINIMIZE
         )
-
+        
         model.optimize()
 
-        if model.Status == GRB.OPTIMAL:
-            print(f"✅ Optimal solution found for {pricing_strategy} Pricing!")
-        else:
-            print(f"⚠️ Unexpected optimization status: {model.Status}")
+        if model.Status == GRB.INFEASIBLE:
+            print("❌ Model is infeasible. Running IIS computation to diagnose issues...")
+            model.computeIIS()
+            model.write("infeasible_model.ilp")
+            print("❌ IIS report saved as infeasible_model.ilp")
             return
 
-        results = pd.DataFrame({
-            "time": initial_solution["time"],
-            "P_import (kW)": [P_import[t].X for t in range(time_intervals)],
-            "P_export (kW)": [P_export[t].X for t in range(time_intervals)],
-            "P_bat_ch (kW)": [P_bat_ch[t].X for t in range(time_intervals)],
-            "P_bat_dis (kW)": [P_bat_dis[t].X for t in range(time_intervals)],
-            "SOC (%)": [(SOC[t].X / battery_capacity) * 100 for t in range(time_intervals)]
-        })
-
-        results.to_csv(f"optimized_{pricing_strategy.lower()}.csv", index=False)
-        print(f"✅ Optimized {pricing_strategy} results saved successfully!")
+        print(f"✅ Optimal solution found for {pricing_strategy} Pricing!")
 
     except Exception as e:
         print(f"❌ An error occurred during optimization: {e}")
