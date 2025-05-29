@@ -1,8 +1,12 @@
 import pandas as pd
 
 # ✅ Load the latest optimization results
+file_path = "WorkingCodeVersion1_FIXED_v10_1.csv"
 file_path = "WorkingCodeVersion1_FIXED_v10_8.csv"
 file_path = "generated_decision_variables.csv"
+file_path = "dynamic_pricing_v12_solution.csv"
+file_path = "WorkingCodeVersion1_HOMER_v10.csv"
+file_path = "dynamic_pricing_v13_solution.csv"
 
 try:
     

@@ -22,9 +22,21 @@ def load_csv(file_path):
         return None
 
 # Load all three datasets
-fixed_df = load_csv("solution_output_FIXED_v4.csv")
+""" fixed_df = load_csv("solution_output_FIXED_v4.csv")
 dynamic_df = load_csv("solution_output_DYNAMIC_v4.csv")
-homer_df = load_csv("WorkingCodeVersion1_HOMER_v10_6.csv")
+homer_df = load_csv("WorkingCodeVersion1_HOMER_v10.csv") """
+
+# Load all three datasets
+fixed_df = load_csv("ml_solution_predictions_v2.csv")
+dynamic_df = load_csv("heuristic_optimization_results_v6.csv")
+homer_df = load_csv("WorkingCodeVersion1_HOMER_v10.csv")
+
+
+
+# Load all three datasets
+fixed_df = load_csv("fixed_pricing_solution.csv")
+dynamic_df = load_csv("dynamic_pricing_v13_solution.csv")
+homer_df = load_csv("WorkingCodeVersion1_HOMER_v10.csv")
 
 # Ensure all dataframes are valid
 if fixed_df is None or dynamic_df is None or homer_df is None:
@@ -68,12 +80,10 @@ comparison_df = comparison_df.merge(homer_df, on="time", how="left")  # Ensure H
 # =======================
 
 # 🔹 Cost Savings (%)
-cost_savings = ((comparison_df["p_import_(kw)_homer"].sum() - comparison_df["p_import_(kw)_fixed"].sum()) / 
-                comparison_df["p_import_(kw)_homer"].sum()) * 100
+cost_savings = ((comparison_df["p_import_(kw)_homer"].sum() - comparison_df["p_import_(kw)_fixed"].sum()) / comparison_df["p_import_(kw)_homer"].sum()) * 100
 
 # 🔹 Grid Dependency Reduction (%)
-grid_reduction = ((comparison_df["p_import_(kw)_homer"].sum() - comparison_df["p_import_(kw)_dynamic"].sum()) / 
-                  comparison_df["p_import_(kw)_homer"].sum()) * 100
+grid_reduction = ((comparison_df["p_import_(kw)_homer"].sum() - comparison_df["p_import_(kw)_dynamic"].sum()) / comparison_df["p_import_(kw)_homer"].sum()) * 100
 
 # 🔹 Battery Utilization
 battery_utilization_fixed = (comparison_df["p_bat_dis_(kw)_fixed"].sum() / comparison_df["p_import_(kw)_fixed"].sum()) * 100

@@ -5,6 +5,11 @@ file_path = "rl_optimization_results_v3.csv"
 file_path = "WorkingCodeVersion1_DYNAMIC_v10_6.csv"
 #file_path = "WorkingCodeVersion1_FIXED_v10_5.csv"
 
+file_path = "dynamic_pricing_v11_solution.csv"
+
+file_path = "WorkingCodeVersion1_HOMER_v10.csv"
+file_path = "dynamic_pricing_v13_solution.csv"
+
 # ✅ Spike thresholds from Parameters.txt
 max_change_limits = {
     "p_import (kw)": 1000,       # max_change_limit
